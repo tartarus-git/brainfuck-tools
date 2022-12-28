@@ -1,4 +1,4 @@
-undefine MAIN_CPP_INCLUDES
+MAIN_CPP_INCLUDES := meta_brainfuck_compiler.h
 
 BINARY_NAME := test_program
 
