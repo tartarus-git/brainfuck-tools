@@ -1,5 +1,7 @@
 #pragma once
 
+#define META_BRAINFUCK_COMPILER_DATA_VECTOR_BUCKET_INC_DEFAULT (1024 * 4)
+
 #include <new>
 #include <cstdint>
 
@@ -38,19 +40,41 @@ Since references don't have the restrictions when it comes to their targets. Ver
 
 	namespace helpers {
 
-		template <typename element_t>
+		template <typename element_t, size_t bucket_size>
 		class non_bad_vector {
 		public:
 			element_t* data = nullptr;
-			size_t length = 0;
 			size_t bucket_length = 0;
+			size_t length = 0;
+
+			consteval non_bad_vector() = default;
+
+			// NOTE: See comment way below somewhere about how this deletes the assignment operator as well.
+			non_bad_vector(const non_bad_vector& other) = delete;
+
+			constexpr non_bad_vector(non_bad_vector&& other) noexcept : 
+				data(other.data), bucket_length(other.bucket_length), length(other.length)
+			{
+				other.data = nullptr;
+			}
+
+			static non_bad_vector create_nulled_out_vec(size_t length) {
+				non_bad_vector result;
+				result.length = length;
+				result.bucket_length = ((length - 1) % bucket_size) + 1;
+				result.data = (element_t*)malloc(result.bucket_length * sizeof(element_t));
+				if (!result.data) { return result; }
+				new (result.data) element_t[length];
+				for (size_t i = 0; i < length; i++) { result[i] = 0; }
+				return result;
+			}
 
 			/*
 			   The rule in C++ is that before you use an object, you have to start it's lifetime (construct it),
 			   and if you at any point stop it's lifetime (destruct it), you can't use it after that unless you start
 			   it's lifetime again (construct it again).
 			   Stopping lifetime isn't necessarily required (that would be annoying, having to explicitly destruct
-			   every array of chars you free from the heap with free()), but STARTING LIFETIME IS OF UTMOST IMPORTANCE
+			   every array of chars you free from the heap), but STARTING LIFETIME IS OF UTMOST IMPORTANCE
 			   if you want to avoid UB, even if it technically does practically absolutely nothing in this case.
 			   Starting the lifetime serves to also set the underlying data type of the memory, which means it is also
 			   something to consider when thinking about strict aliasing:
@@ -66,20 +90,21 @@ Since references don't have the restrictions when it comes to their targets. Ver
 			*/
 
 			bool push_initialized_mem(size_t amount) noexcept {
-				// TODO: Go over this class and this function again.
 				size_t new_bucket_length = bucket_length + amount;
-				element_t* new_data = (element_t*)realloc(data, new_bucket_length);
+				element_t* new_data = (element_t*)realloc(data, new_bucket_length * sizeof(element_t));
 				if (!new_data) { return false; }
-				new (new_data + bucket_length) element_t[amount];
 				bucket_length = new_bucket_length;
 				data = new_data;
 				return true;
 			}
 
+			// TODO: Think about using some pointers instead of lengths and offsets, could get you some optimizations for speed.
+
 			template <typename element_ref_t>
 			bool push_back(element_ref_t&& new_element) noexcept {
-				if (length == bucket_length) { if (!push_initialized_mem(4096)) { return false; } }
-				data[length++] = std::forward<element_ref_t>(new_element);
+				if (length == bucket_length) { if (!push_initialized_mem(bucket_size)) { return false; } }
+				element_t* ptr = new (data + length++) element_t;	// placement new to start lifetime of object
+				*ptr = std::forward<element_ref_t>(new_element);
 				return true;
 			}
 
@@ -87,23 +112,34 @@ Since references don't have the restrictions when it comes to their targets. Ver
 			element_t& operator[](size_t index) noexcept { return data[index]; }
 
 			// We aren't actually required to end the lifetime of objects, but it seems fitting here.
-			~non_bad_vector() { delete[] data; }
+			~non_bad_vector() {
+				// NOTE: We aren't actually allowed to call delete here because that would try to free it from the heap,
+				// which is bad since we're not allowed to mix C++ and C heap functions.
+				// INSTEAD, we simply directly call the destructor, but only if the pointer is valid.
+				// THEN, we free it from the heap with a C function.
+				// IMPORTANT: Don't worry about the type not having a destructor, C++ makes sure all types have a valid,
+				// callable destructor so that codes like this can remain simple.
+				// INTERESTINGLY: I think it's only valid in a general context such as this. Writing x.~int() is illegal,
+				// even if x is an int (AFAIK).
+				if (data) { for (size_t i = 0; i < length; i++) { data[i].~element_t(); } }
+				free(data);
+			}
 		};
 
 	}
 
-	template <const char * const& source_code_const_string_original, typename input_functor_t, typename output_functor_t>
+	template <const char * const& source_code_const_string_original, typename input_functor_t, typename output_functor_t, size_t data_vector_bucket_size>
 	class compiled_brainfuck_t {
 	public:
-		helpers::non_bad_vector<uint8_t> data;
+		helpers::non_bad_vector<uint8_t, data_vector_bucket_size> data = helpers::non_bad_vector<uint8_t, data_vector_bucket_size>::create_nulled_out_vec(1);
 		uint8_t* data_ptr = data.data;
 
 		input_functor_t read_input_byte;
 		output_functor_t write_output_byte;
 
-		consteval compiled_brainfuck_t(const input_functor_t& read_input_byte_callback, const output_functor_t& write_output_byte_callback) : read_input_byte(read_input_byte_callback), write_output_byte(write_output_byte_callback) { }
+		compiled_brainfuck_t(const input_functor_t& read_input_byte_callback, const output_functor_t& write_output_byte_callback) : read_input_byte(read_input_byte_callback), write_output_byte(write_output_byte_callback) { }
 
-		consteval compiled_brainfuck_t(compiled_brainfuck_t<source_code_const_string_original, input_functor_t, output_functor_t>&& other) : 
+		consteval compiled_brainfuck_t(compiled_brainfuck_t<source_code_const_string_original, input_functor_t, output_functor_t, data_vector_bucket_size>&& other) : 
 			data(other.data), data_ptr(other.data_ptr), 
 			read_input_byte(other.read_input_byte), write_output_byte(other.write_output_byte)
 		{
@@ -199,7 +235,7 @@ Since references don't have the restrictions when it comes to their targets. Ver
 			}
 		}
 
-		bool run() noexcept { data.push_back(0); data_ptr = data.data; return inner_run<source_code_const_string_original, 0, 0>(); }
+		bool run() noexcept { return inner_run<source_code_const_string_original, 0, 0>(); }
 	};
 
 // NOTE: The callbacks can be any functor, including function pointers,
@@ -209,11 +245,11 @@ Since references don't have the restrictions when it comes to their targets. Ver
 // target functions reside in the same translation unit as the
 // compiled brainfuck program. That way, the compiler
 // should have a much easier time inlining the function calls.
-#define META_COMPILE_BRAINFUCK(source_code, read_input_byte_callback, write_output_byte_callback) []() { \
+#define META_COMPILE_BRAINFUCK_WITH_CUSTOM_BUCKET_INC_SIZE(source_code, read_input_byte_callback, write_output_byte_callback, bucket_inc_size) []() { \
 auto read_input_byte_callback_temp = read_input_byte_callback; \
 auto write_output_byte_callback_temp = write_output_byte_callback; \
 static constexpr const char *source_code_ptr = source_code; \
-return meta::compiled_brainfuck_t<source_code_ptr, decltype(read_input_byte_callback_temp), decltype(write_output_byte_callback_temp)>(read_input_byte_callback_temp, write_output_byte_callback_temp); \
+return meta::compiled_brainfuck_t<source_code_ptr, decltype(read_input_byte_callback_temp), decltype(write_output_byte_callback_temp), bucket_inc_size>(read_input_byte_callback_temp, write_output_byte_callback_temp); \
 }()
 //return meta::compiled_brainfuck_t<source_code_const_string>();	// This is something we had in a previous revision, seems weird but works.
 // Explanation: because it can't be a type in this context, the compiler is smart enought to pick up on the meaning.
@@ -222,5 +258,7 @@ return meta::compiled_brainfuck_t<source_code_ptr, decltype(read_input_byte_call
 // argument lists.
 // The bottom line is that the compiler doesn't know what type of argument it's shooting for before constructing the initial list, so it
 // always assumes type instead of non-type when it can, because that makes the most sense.
+
+#define META_COMPILE_BRAINFUCK(source_code, read_input_byte_callback, write_output_byte_callback) META_COMPILE_BRAINFUCK_WITH_CUSTOM_BUCKET_INC_SIZE(source_code, read_input_byte_callback, write_output_byte_callback, META_BRAINFUCK_COMPILER_DATA_VECTOR_BUCKET_INC_DEFAULT)
 
 }
