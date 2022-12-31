@@ -52,7 +52,7 @@ Since references don't have the restrictions when it comes to their targets. Ver
 			// NOTE: See comment way below somewhere about how this deletes the assignment operator as well.
 			non_bad_vector(const non_bad_vector& other) = delete;
 
-			constexpr non_bad_vector(non_bad_vector&& other) noexcept : 
+			consteval non_bad_vector(non_bad_vector&& other) noexcept : 
 				data(other.data), bucket_length(other.bucket_length), length(other.length)
 			{
 				other.data = nullptr;
