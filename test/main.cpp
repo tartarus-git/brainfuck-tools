@@ -12,8 +12,8 @@
 		[]() -> uint16_t {
 			return std::cin.get();
 		}, 
-		[](char character) -> bool {
-			std::cout << character;
+		[](uint8_t character) -> bool {
+			std::cout << (char)character;
 			return true;
 		});
 

@@ -192,7 +192,7 @@ Since references don't have the restrictions when it comes to their targets. Ver
 		 // NOTE: Doesn't care if the functions are noexcept or not, which is fine since that doesn't matter for us in this case.
 		 // NOTE: Also doesn't give any thought to whether they're const or anything, which is also fine since that doesn't concern us.
 		 typename std::enable_if<is_invokable_through<input_functor_t, uint16_t()> { } &&
-			 is_invokable_through<output_functor_t, bool(char)> { }, bool>::type = true>
+			 is_invokable_through<output_functor_t, bool(uint8_t)> { }, bool>::type = true>
 	class compiled_brainfuck_t {
 	public:
 		helpers::non_bad_vector<uint8_t, data_vector_bucket_size> data = helpers::non_bad_vector<uint8_t, data_vector_bucket_size>::create_nulled_out_vec(1);
