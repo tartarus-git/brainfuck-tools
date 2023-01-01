@@ -13,6 +13,8 @@ endif
 
 CLANG_PREAMBLE := clang++-15 -std=$(CPP_STD) -$(OPTIMIZATION_LEVEL) $(POSSIBLE_WALL) -fno-exceptions
 
+EMIT_ASSEMBLY := false
+
 .PHONY: all unoptimized clean
 
 all: test/bin/$(BINARY_NAME)
@@ -25,6 +27,9 @@ test/bin/$(BINARY_NAME): test/bin/main.o
 
 test/bin/main.o: test/main.cpp $(MAIN_CPP_INCLUDES) test/bin/.dirstamp
 	$(CLANG_PREAMBLE) -c -I. -o test/bin/main.o test/main.cpp
+ifeq ($(EMIT_ASSEMBLY), true)
+	$(CLANG_PREAMBLE) -S -I. -o test/bin/main.s test/main.cpp
+endif
 
 test/bin/.dirstamp:
 	mkdir -p test/bin
