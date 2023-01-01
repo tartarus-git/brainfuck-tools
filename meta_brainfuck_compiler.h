@@ -4,6 +4,8 @@
 
 #include <new>
 #include <cstdint>
+#include <utility>
+#include <cstdlib>
 
 namespace meta {
 
@@ -64,8 +66,7 @@ Since references don't have the restrictions when it comes to their targets. Ver
 				result.bucket_length = ((length - 1) % bucket_size) + 1;
 				result.data = (element_t*)malloc(result.bucket_length * sizeof(element_t));
 				if (!result.data) { return result; }
-				new (result.data) element_t[length];
-				for (size_t i = 0; i < length; i++) { result[i] = 0; }
+				for (size_t i = 0; i < length; i++) { new (result.data + i) element_t(0); }
 				return result;
 			}
 
@@ -89,7 +90,7 @@ Since references don't have the restrictions when it comes to their targets. Ver
 			   destructing the object and re-constructing it, which (you are required to assume this) destroys the data as well.
 			*/
 
-			bool push_initialized_mem(size_t amount) noexcept {
+			bool push_uninitialized_mem(size_t amount) noexcept {
 				size_t new_bucket_length = bucket_length + amount;
 				element_t* new_data = (element_t*)realloc(data, new_bucket_length * sizeof(element_t));
 				if (!new_data) { return false; }
@@ -98,11 +99,14 @@ Since references don't have the restrictions when it comes to their targets. Ver
 				return true;
 			}
 
-			// TODO: Think about using some pointers instead of lengths and offsets, could get you some optimizations for speed.
+			// NOTE: We could use pointers instead of indices since that would suit this class's use-case a bit more.
+			// But keeping this class general has it's advantages.
+			// You also must consider that the compiler should easily be able to optimize the parts of the code that I have in mind,
+			// so it's pretty much all good.
 
 			template <typename element_ref_t>
 			bool push_back(element_ref_t&& new_element) noexcept {
-				if (length == bucket_length) { if (!push_initialized_mem(bucket_size)) { return false; } }
+				if (length == bucket_length) { if (!push_uninitialized_mem(bucket_size)) { return false; } }
 				element_t* ptr = new (data + length++) element_t;	// placement new to start lifetime of object
 				*ptr = std::forward<element_ref_t>(new_element);
 				return true;
@@ -110,6 +114,28 @@ Since references don't have the restrictions when it comes to their targets. Ver
 
 			const element_t& operator[](size_t index) const noexcept { return data[index]; }
 			element_t& operator[](size_t index) noexcept { return data[index]; }
+
+			void release_length_keep_reserve() noexcept {
+				for (size_t i = 0; i < length; i++) { data[i].~element_t(); }
+				length = 0;
+			}
+
+			// NOTE: Obviously using this requires you to push_back(0) afterwards in the case of this program's use-case.
+			// This frees only to allocate again, which is slower than it need be.
+			// Provided that realloc doesn't unnecessarily move the block around (this technically can't be assumed),
+			// using realloc instead of this and push_back(0) would be faster.
+			// The reason I don't do that is because I don't want to specialize this class for this program, I wanna keep it general.
+			// That alone isn't a good reason, but combine it with the fact that the resetting code doesn't have to be fast at all
+			// and the fact that there's a silver lining (freeing and re-allocating it is better for preventing
+			// heap fragmentation, although for this program it doesn't really make a difference since we're not doing anything
+			// else with the heap anyway).
+			// That sounds like a good deal.
+			void reset_everything() noexcept {
+				release_length_keep_reserve();
+				free(data);
+				data = nullptr;		// NOTE: necessary for realloc to work right
+				bucket_length = 0;
+			}
 
 			// We aren't actually required to end the lifetime of objects, but it seems fitting here.
 			~non_bad_vector() {
@@ -128,10 +154,49 @@ Since references don't have the restrictions when it comes to their targets. Ver
 
 	}
 
-	template <const char * const& source_code_const_string_original, typename input_functor_t, typename output_functor_t, size_t data_vector_bucket_size>
+	enum class brainfuck_run_return_t : uint8_t {
+		ALLOCATION_FAILURE,
+		SUCCESS,
+		INPUT_FAILURE,
+		OUTPUT_FAILURE
+	};
+
+	template <typename A_t, typename B_t>
+	struct are_types_same { consteval operator bool() const { return false; } };
+
+	template <typename A_t>
+	struct are_types_same<A_t, A_t> { consteval operator bool() const { return true; } };
+
+	template <typename T, typename conduit_t>
+	struct is_invokable_through { };
+
+	template <typename T, typename conduit_ret_t, typename... conduit_param_types>
+	struct is_invokable_through<T, conduit_ret_t(conduit_param_types...)> {
+	private:
+		using yes_ret_t = char[2];
+		using no_ret_t = char[1];
+
+		template <typename U, typename ret_t, typename... param_types, 
+			 typename std::enable_if<are_types_same<decltype((*(U*)nullptr)((*(param_types*)nullptr)...)), ret_t> { }, bool>::type = true>
+		consteval yes_ret_t& filter(void*) const;
+
+		// NOTE: Apparently only funcs with templated definitions are considered in overload resolution, so we have to put this here.
+		template <typename U, typename ret_t, typename... param_types>
+		consteval no_ret_t& filter(...) const;
+
+	public:
+		consteval operator bool() const { return sizeof(filter<T, conduit_ret_t, conduit_param_types...>(nullptr)) == sizeof(yes_ret_t); }
+	};
+
+	template <const char * const& source_code_const_string_original, typename input_functor_t, typename output_functor_t, size_t data_vector_bucket_size, 
+		 // NOTE: Doesn't care if the functions are noexcept or not, which is fine since that doesn't matter for us in this case.
+		 // NOTE: Also doesn't give any thought to whether they're const or anything, which is also fine since that doesn't concern us.
+		 typename std::enable_if<is_invokable_through<input_functor_t, uint16_t()> { } &&
+			 is_invokable_through<output_functor_t, bool(char)> { }, bool>::type = true>
 	class compiled_brainfuck_t {
 	public:
 		helpers::non_bad_vector<uint8_t, data_vector_bucket_size> data = helpers::non_bad_vector<uint8_t, data_vector_bucket_size>::create_nulled_out_vec(1);
+		uint8_t* data_end_ptr = data.data + data.length;
 		uint8_t* data_ptr = data.data;
 
 		input_functor_t read_input_byte;
@@ -140,27 +205,28 @@ Since references don't have the restrictions when it comes to their targets. Ver
 		compiled_brainfuck_t(const input_functor_t& read_input_byte_callback, const output_functor_t& write_output_byte_callback) : read_input_byte(read_input_byte_callback), write_output_byte(write_output_byte_callback) { }
 
 		consteval compiled_brainfuck_t(compiled_brainfuck_t<source_code_const_string_original, input_functor_t, output_functor_t, data_vector_bucket_size>&& other) : 
-			data(other.data), data_ptr(other.data_ptr), 
+			data(std::move(other.data)), data_ptr(other.data_ptr), data_end_ptr(other.data_end_ptr), 
 			read_input_byte(other.read_input_byte), write_output_byte(other.write_output_byte)
-		{
-			other.data = nullptr;
-		}
+		{ }
 
 		// NOTE: I forgot when this is going to be introduced, but I remember that this should (eventually) imply
 		// that the copy assignment operator is also deleted. So this one line does everything we need it to.
 		compiled_brainfuck_t(const compiled_brainfuck_t& other) = delete;
 
 		bool increment_data_ptr() noexcept {
-			data_ptr++;
-			if (data_ptr == data.data + data.length) {
+			if (++data_ptr == data_end_ptr) {
 				if (!data.push_back(0)) { return false; }
-				data_ptr = data.data + data.length;
+				data_end_ptr = data.data + data.length;
+				data_ptr = data_end_ptr - 1;
 			}
 			return true;
 		}
 
 		bool decrement_data_ptr() noexcept {
-			return --data_ptr < data.data;
+			// NOTE: We have to do it like this to avoid pointer underflow/overflow, which is super duper UB.
+			if (data_ptr == data.data) { return false; }
+			data_ptr--;
+			return true;
 		}
 
 		/*
@@ -181,61 +247,99 @@ Since references don't have the restrictions when it comes to their targets. Ver
 		*/
 
 		template <const char * const& source_code_const_string, size_t src_offset, size_t baseline_depth, size_t depth>
-		bool loop_skip() noexcept {
+		brainfuck_run_return_t loop_skip() noexcept {
 			constexpr const char* source_code_ptr = source_code_const_string + src_offset;
 
 			if constexpr (*source_code_ptr == '[') { return loop_skip<source_code_const_string, src_offset + 1, baseline_depth, depth + 1>(); }
+
 			else if constexpr (*source_code_ptr == ']') {
 				if constexpr (depth == baseline_depth) { return inner_run<source_code_const_string, src_offset + 1, baseline_depth - 1>(); }
 				else { return loop_skip<source_code_const_string, src_offset + 1, baseline_depth, depth - 1>(); }
 			}
+
 			else {
-				static_assert(*source_code_ptr != '\0', "brainfuck compilation failed: ']' character must eventually come after a '[' character");
+				static_assert(*source_code_ptr != '\0', "brainfuck compilation failed: '[' character did not posess a succeeding ']' character");
 				return loop_skip<source_code_const_string, src_offset + 1, baseline_depth, depth>();
 			}
 		}
 
 		template <const char * const& source_code_const_string, size_t src_offset, size_t depth>
-		bool inner_run() noexcept {
+		brainfuck_run_return_t inner_run() noexcept {
 			constexpr const char* source_code_ptr = source_code_const_string + src_offset;
 
-			if constexpr (*source_code_ptr == '>') { if (!increment_data_ptr()) { return false; }
-			return inner_run<source_code_const_string, src_offset + 1, depth>();
+			if constexpr (*source_code_ptr == '>') {
+				if (!increment_data_ptr()) { return brainfuck_run_return_t::ALLOCATION_FAILURE; }
+				return inner_run<source_code_const_string, src_offset + 1, depth>();
 			}
-			else if constexpr (*source_code_ptr == '<') { if (!decrement_data_ptr()) { return false; }
-			return inner_run<source_code_const_string, src_offset + 1, depth>();
+
+			else if constexpr (*source_code_ptr == '<') {
+				if (!decrement_data_ptr()) { return brainfuck_run_return_t::ALLOCATION_FAILURE; }
+				return inner_run<source_code_const_string, src_offset + 1, depth>();
 			}
-			else if constexpr (*source_code_ptr == '+') { (*data_ptr)++;
-			return inner_run<source_code_const_string, src_offset + 1, depth>();
+
+			// NOTE: Don't worry, the brainfuck program can totally overflow the data values without causing UB. It's ok.
+			else if constexpr (*source_code_ptr == '+') {
+				(*data_ptr)++;
+				return inner_run<source_code_const_string, src_offset + 1, depth>();
 			}
-			else if constexpr (*source_code_ptr == '-') { (*data_ptr)--;
-			return inner_run<source_code_const_string, src_offset + 1, depth>();
+
+			else if constexpr (*source_code_ptr == '-') {
+				(*data_ptr)--;
+				return inner_run<source_code_const_string, src_offset + 1, depth>();
 			}
+
 			else if constexpr (*source_code_ptr == '[') {
-				while (*data_ptr != 0) { if (!inner_run<source_code_const_string, src_offset + 1, depth + 1>()) { return false; } }
+				while (*data_ptr != 0) {
+					brainfuck_run_return_t return_value = inner_run<source_code_const_string, src_offset + 1, depth + 1>();
+					if (return_value != brainfuck_run_return_t::SUCCESS) { return return_value; }
+				}
 				constexpr size_t new_depth = depth + 1;
 				return loop_skip<source_code_const_string, src_offset + 1, new_depth, new_depth>();
 			}
+
 			else if constexpr (*source_code_ptr == ']') {
-				static_assert(depth != 0, "failure because ending bracket without a starting one");
-				return true;
-			} else if constexpr (*source_code_ptr == ',') {
+				static_assert(depth != 0, "brainfuck compilation failed: ']' character did not posess a preceding '[' character");
+				return brainfuck_run_return_t::SUCCESS;
+			}
+			
+			else if constexpr (*source_code_ptr == ',') {
 				uint16_t input_result = read_input_byte();
-				if (input_result == (uint16_t)-1) { return false; }
+				if (input_result == (uint16_t)-1) { return brainfuck_run_return_t::INPUT_FAILURE; }
 				*data_ptr = input_result;
-			return inner_run<source_code_const_string, src_offset + 1, depth>();
-			} else if constexpr (*source_code_ptr == '.') {
-				if (!write_output_byte(*data_ptr)) { return false; }
-			return inner_run<source_code_const_string, src_offset + 1, depth>();
-			} else if constexpr (*source_code_ptr == '\0') {
-				static_assert(depth == 0, "failure to compile missing end bracket");
-				return true;
-			} else {
 				return inner_run<source_code_const_string, src_offset + 1, depth>();
 			}
+			
+			else if constexpr (*source_code_ptr == '.') {
+				if (!write_output_byte(*data_ptr)) { return brainfuck_run_return_t::OUTPUT_FAILURE; }
+				return inner_run<source_code_const_string, src_offset + 1, depth>();
+			}
+
+			else if constexpr (*source_code_ptr == '\0') {
+				static_assert(depth == 0, "brainfuck compilation failed: '[' character did not posess a succeeding ']' character");
+				return brainfuck_run_return_t::SUCCESS;
+			}
+
+			else { return inner_run<source_code_const_string, src_offset + 1, depth>(); }
 		}
 
-		bool run() noexcept { return inner_run<source_code_const_string_original, 0, 0>(); }
+		brainfuck_run_return_t run() noexcept {
+			if (!data.data) { return brainfuck_run_return_t::ALLOCATION_FAILURE; }
+			return inner_run<source_code_const_string_original, 0, 0>();
+		}
+
+		bool reset_state_keep_vec_reserved() noexcept {
+			data.release_length_keep_reserve();
+			data.push_back(0);
+			data_ptr = data.data;
+			data_end_ptr = data_ptr + 1;
+		}
+
+		bool reset_state_unreserve_vec() noexcept {
+			data.reset_everything();
+			data.push_back(0);
+			data_ptr = data.data;
+			data_end_ptr = data_ptr + 1;
+		}
 	};
 
 // NOTE: The callbacks can be any functor, including function pointers,
