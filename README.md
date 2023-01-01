@@ -15,6 +15,7 @@ This will compile your brainfuck source code into binary at compile-time and gen
 ```cpp
 #include "meta_brainfuck_compiler.h"
 
+// NOTE: This doesn't have to be global, you can put this in local scope as well.
 auto compiled_brainfuck_program = META_COMPILE_BRAINFUCK("<bf-src>", read_character_functor, write_character_functor);
 
 int main() {
@@ -45,6 +46,9 @@ Some important things to know are:
   ```bash
   make CUSTOM_RECURSIVE_TEMPLATE_MAX_DEPTH:=<new-max-depth>
   ```
+
+## Example program:
+I've got an example program that I used to test out the functionality of the library, it's located inside of the test folder.
   
 ## How does it work?
 Well for one, it sounds a lot more complex that it actually is. I didn't actually need to write a fully fledged compiler and I didn't even need to touch optimization explicitly. I don't know what this structure is called (if it even has a name), but I've used recursive function calls containing constexpr if statements (while providing the brainfuck source code as a template parameter) to generate C++ code at compile-time. This works because the recursion is easy to optimize out because it's tail-call recursion (mostly), which causes the compiler to convert my huge ladder of recursive function calls into one function that contains a concatination of source codes of the recursive functions. This generated C++ code is obviously converted into binary by the surrounding C++ compiler and even optimized if you tell the C++ compiler to optimize, making the resulting binary pretty fast. This doesn't mean that the brainfuck code will be as fast as C++ code. The C++ compiler isn't able to optimize the code to the same degree as it can with normal C++ code because it hasn't been programmed to look for typical brainfuck programming patterns. Maybe in the future I'll implement my own compile-time optimization pass in order to detect some common patterns and translate those into optimized C++ code, which the surrounding C++ compiler can better work with. The second reason the optimization isn't fantastic is because brainfuck is incredibly low-level, meaning the goals of the programmer don't come through as much. It's a lot harder to know what the programmer was trying to do and as such it's harder to optimize in order to help him achieve his goal.
